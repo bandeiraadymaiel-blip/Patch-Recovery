@@ -25,36 +25,34 @@ jobs:
         sudo apt update
         sudo apt install -y git wget lz4 tar openssl python3 cpio
 
-        # 🔥 FIX: install magiskboot
+        # download magiskboot
         wget -O magiskboot https://github.com/topjohnwu/Magisk/releases/latest/download/magiskboot
         chmod +x magiskboot
 
     - name: Download recovery
       run: |
         set -e
-        wget "${{ github.event.inputs.RECOVERY_URL }}" -O r.img
-        file r.img
+        wget "${{ github.event.inputs.RECOVERY_URL }}" -O recovery.img
+        file recovery.img
 
     - name: Unpack boot image
       run: |
         set -e
 
-        mkdir -p fs
-
         echo "=== UNPACK ==="
-        ./magiskboot unpack r.img || {
-          echo "❌ unpack failed"
-          exit 1
-        }
+        ./magiskboot unpack recovery.img
 
+        echo "=== CHECK FILES ==="
         ls -lah
+
+        mkdir -p fs
 
         if [ -f ramdisk.cpio ]; then
           ./magiskboot cpio ramdisk.cpio extract -o fs
         elif [ -f ramdisk ]; then
           ./magiskboot cpio ramdisk extract -o fs
         else
-          echo "❌ NO RAMDISK FOUND"
+          echo "ERROR: no ramdisk found"
           exit 1
         fi
 
@@ -65,7 +63,7 @@ jobs:
       run: |
         set -e
         chmod +x script1.sh
-        ./script1.sh r.img
+        ./script1.sh recovery.img
 
     - name: Patch Process 2
       run: |
@@ -73,11 +71,10 @@ jobs:
         chmod +x script2.sh
         ./script2.sh fs
 
-        echo "=== CHECK OUTPUT ==="
         ls -lah
 
         test -f recovery-patched.img || {
-          echo "❌ patch failed"
+          echo "ERROR: patch failed"
           exit 1
         }
 
