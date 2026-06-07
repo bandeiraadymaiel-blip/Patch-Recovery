@@ -11,57 +11,42 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
     steps:
+
     - name: Checkout
       uses: actions/checkout@v4
 
     - name: Install tools
       run: |
+        set -e
         sudo apt update
-        sudo apt install -y wget lz4 cpio file tar openssl python3
+        sudo apt install -y git wget lz4 tar openssl python3 cpio
+
+        # 🔥 FIX: install magiskboot
+        wget -O magiskboot https://github.com/topjohnwu/Magisk/releases/latest/download/magiskboot
+        chmod +x magiskboot
 
     - name: Download recovery
       run: |
+        set -e
         wget "${{ github.event.inputs.RECOVERY_URL }}" -O r.img
         file r.img
 
-    - name: FIX IMAGE FORMAT (IMPORTANT)
-      run: |
-        echo "Checking format..."
-
-        TYPE=$(file r.img)
-
-        echo "$TYPE"
-
-        if echo "$TYPE" | grep -i "lz4"; then
-          echo "LZ4 detected"
-          lz4 -d r.img r_fixed.img
-          IMG=r_fixed.img
-        elif echo "$TYPE" | grep -i "sparse"; then
-          echo "Sparse detected"
-          sudo apt install -y android-sdk-libsparse-utils
-          simg2img r.img r_fixed.img
-          IMG=r_fixed.img
-        else
-          echo "Assuming raw boot image"
-          IMG=r.img
-        fi
-
-        echo "Using image: $IMG"
-        echo $IMG > img.txt
-
     - name: Unpack boot image
       run: |
-        IMG=$(cat img.txt)
+        set -e
 
         mkdir -p fs
 
-        ./magiskboot unpack "$IMG" || {
-          echo "ERROR: magiskboot failed"
+        echo "=== UNPACK ==="
+        ./magiskboot unpack r.img || {
+          echo "❌ unpack failed"
           exit 1
         }
 
-        echo "Checking ramdisk..."
         ls -lah
 
         if [ -f ramdisk.cpio ]; then
@@ -69,27 +54,54 @@ jobs:
         elif [ -f ramdisk ]; then
           ./magiskboot cpio ramdisk extract -o fs
         else
-          echo "No ramdisk found"
+          echo "❌ NO RAMDISK FOUND"
           exit 1
         fi
 
+        echo "=== RAMDISK STRUCTURE ==="
         find fs | head -200
 
-    - name: Patch Process
+    - name: Patch Process 1
       run: |
+        set -e
+        chmod +x script1.sh
+        ./script1.sh r.img
+
+    - name: Patch Process 2
+      run: |
+        set -e
         chmod +x script2.sh
         ./script2.sh fs
 
-    - name: Build Odin package
-      run: |
-        mkdir -p output
+        echo "=== CHECK OUTPUT ==="
+        ls -lah
 
-        if [ -f recovery-patched.img ]; then
-          mv recovery-patched.img output/recovery.img
-        else
-          echo "ERROR: no output image"
+        test -f recovery-patched.img || {
+          echo "❌ patch failed"
           exit 1
-        fi
+        }
+
+    - name: AVB signing
+      run: |
+        set -e
+
+        python3 avbtool extract_public_key \
+          --key phh.pem \
+          --output phh.pub.bin
+
+        python3 avbtool add_hash_footer \
+          --partition_name recovery \
+          --partition_size $(wc -c recovery-patched.img | cut -f1 -d' ') \
+          --image recovery-patched.img \
+          --key phh.pem \
+          --algorithm SHA256_RSA4096
+
+    - name: Package Odin
+      run: |
+        set -e
+
+        mkdir -p output
+        mv recovery-patched.img output/recovery.img
 
         cd output
         tar cvf recovery.tar recovery.img
