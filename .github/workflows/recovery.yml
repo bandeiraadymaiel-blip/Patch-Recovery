@@ -6,7 +6,6 @@ on:
       RECOVERY_URL:
         description: 'RECOVERY URL'
         required: true
-        default: 'https://files.catbox.moe/(RECOMMENDED)'
 
 jobs:
   build:
@@ -16,49 +15,79 @@ jobs:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
-    - name: Check Out
+    - name: Checkout
       uses: actions/checkout@v4
 
-    - name: Prepare the environment
+    - name: Prepare environment
       run: |
         sudo apt update
-        sudo apt install -y git wget lz4 tar openssl python3
+        sudo apt install -y git wget lz4 tar openssl python3 cpio
 
-    - name: Fetch image from URL
+    - name: Download recovery
       run: |
-        wget "${{ github.event.inputs.RECOVERY_URL }}" -O recovery.img
+        wget "${{ github.event.inputs.RECOVERY_URL }}" -O r.img
+        file r.img
 
-    - name: Patch Process-1
+    - name: Patch Process 1
       run: |
-        chmod +x script1.sh
-        chmod +x magiskboot
-        ./script1.sh recovery.img || true
+        chmod +x script1.sh magiskboot
+        ./script1.sh r.img || true
 
-    - name: Patch Process-2
+    - name: Extract ramdisk (FIXED)
+      run: |
+        mkdir -p fs
+        ./magiskboot unpack r.img
+
+        echo "Extracting cpio..."
+        ./magiskboot cpio ramdisk.cpio extract -o fs || true
+
+        echo "RAMDISK STRUCTURE:"
+        find fs | head -200
+
+    - name: Patch Process 2 (FIXED)
       run: |
         chmod +x script2.sh
-        ./script2.sh || true
 
-        python3 avbtool extract_public_key \
-          --key phh.pem \
-          --output phh.pub.bin
+        # IMPORTANT: ensure script uses fs/ paths internally
+        ./script2.sh fs || true
 
-        python3 avbtool add_hash_footer \
-          --partition_name recovery \
-          --partition_size $(wc -c recovery.img | cut -f 1 -d ' ') \
-          --image recovery-patched.img \
-          --key phh.pem \
-          --algorithm SHA256_RSA4096
+        echo "Checking outputs..."
+        ls -lah
 
+    - name: AVB signing (SAFE)
+      run: |
+        if [ -f recovery-patched.img ]; then
+          python3 avbtool extract_public_key \
+            --key phh.pem \
+            --output phh.pub.bin
+
+          python3 avbtool add_hash_footer \
+            --partition_name recovery \
+            --partition_size $(wc -c recovery-patched.img | cut -f1 -d' ') \
+            --image recovery-patched.img \
+            --key phh.pem \
+            --algorithm SHA256_RSA4096
+        else
+          echo "No patched image found, skipping AVB"
+        fi
+
+    - name: Package for Odin
+      run: |
         mkdir -p output
-        mv recovery-patched.img output/recovery.img
+
+        if [ -f recovery-patched.img ]; then
+          mv recovery-patched.img output/recovery.img
+        else
+          echo "ERROR: no recovery image generated"
+          exit 1
+        fi
 
         cd output
-        tar cvf fastbootd-recovery.tar recovery.img
-        md5sum -t fastbootd-recovery.tar >> fastbootd-recovery.tar
-        mv fastbootd-recovery.tar fastbootd-recovery.tar.md5
+        tar cvf recovery.tar recovery.img
+        md5sum -t recovery.tar >> recovery.tar
+        mv recovery.tar recovery.tar.md5
 
-    - name: Upload to Release
+    - name: Upload release
       uses: softprops/action-gh-release@v2
       with:
         files: output/*.md5
